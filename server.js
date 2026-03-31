@@ -13,13 +13,13 @@ import { Boom } from "@hapi/boom";
 import pino from "pino";
 import { toDataURL } from "qrcode";
 import fs from "fs";
-import crypto from "crypto";
+import crypto from "crypto"; // ✅ fixed crypto issue
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const PORT = process.env.PORT || 3000;
 const AUTH_DIR = join(__dirname, "prezzy_auth");
 
-// ✅ SONG LIST
+// ✅ SONGS WITH AUDIO
 const SONGS = [
   { title: "Essence", artist: "Wizkid ft. Tems", url: "/songs/essence.mp3" },
   { title: "Calm Down", artist: "Rema", url: "/songs/calmdown.mp3" },
@@ -34,70 +34,17 @@ const app = express();
 const server = createServer(app);
 const wss = new WebSocketServer({ server, path: "/session-ws" });
 
-// ✅ Serve your existing homepage without changing it
+// ✅ Serve your existing homepage without touching it
 app.use(express.static(join(__dirname, "dist")));
 
-// ✅ Serve local songs
+// ✅ Serve songs folder
 app.use("/songs", express.static(join(__dirname, "songs")));
 
-// ✅ Serve the frontend JS for optional music
-app.get("/randomSong.js", (_req, res) => {
-  res.type("application/javascript");
-  res.send(`
-    const SONGS = ${JSON.stringify(SONGS)};
-
-    window.addEventListener("DOMContentLoaded", () => {
-      const audioPlayer = document.createElement("audio");
-      audioPlayer.id = "audioPlayer";
-      audioPlayer.controls = true;
-      audioPlayer.style.display = "none";
-      document.body.appendChild(audioPlayer);
-
-      const nowPlayingDiv = document.createElement("div");
-      nowPlayingDiv.id = "nowPlaying";
-      document.body.appendChild(nowPlayingDiv);
-
-      const welcomeDiv = document.createElement("div");
-      welcomeDiv.id = "welcome";
-      welcomeDiv.innerHTML = \`
-        <h1>🎵 Welcome!</h1>
-        <p>Would you like to listen to a song while you are here?</p>
-        <button id="yesBtn">Yes</button>
-        <button id="noBtn">No</button>
-      \`;
-      document.body.prepend(welcomeDiv);
-
-      const yesBtn = document.getElementById("yesBtn");
-      const noBtn = document.getElementById("noBtn");
-
-      function playRandomSong() {
-        const song = SONGS[Math.floor(Math.random() * SONGS.length)];
-        audioPlayer.src = song.url;
-        audioPlayer.style.display = "block";
-        nowPlayingDiv.innerText = "🎵 Now Playing: " + song.title + " – " + song.artist;
-        audioPlayer.play().catch(err => console.log("Autoplay blocked", err));
-      }
-
-      yesBtn.addEventListener("click", () => {
-        welcomeDiv.style.display = "none";
-        playRandomSong();
-      });
-
-      noBtn.addEventListener("click", () => {
-        welcomeDiv.innerHTML = "<p>Okay, enjoy your visit! 🎵</p>";
-      });
-
-      audioPlayer.addEventListener("ended", () => {
-        playRandomSong();
-      });
-    });
-  `);
-});
-
-// ✅ Backend health check
 app.get("/api", (req, res) => res.send("Backend running 🚀"));
+app.get("*", (_req, res) =>
+  res.sendFile(join(__dirname, "dist", "index.html"))
+);
 
-// ✅ WhatsApp pairing & sending random song
 wss.on("connection", (ws) => {
   let sock = null;
   let closed = false;
@@ -111,7 +58,7 @@ wss.on("connection", (ws) => {
   }
 
   async function startBaileys(method, phone) {
-    const sessionDir = join(AUTH_DIR, \`session_\${Date.now()}\`);
+    const sessionDir = join(AUTH_DIR, `session_${Date.now()}`);
     fs.mkdirSync(sessionDir, { recursive: true });
 
     const { state, saveCreds } = await useMultiFileAuthState(sessionDir);
@@ -129,17 +76,19 @@ wss.on("connection", (ws) => {
 
     sock.ev.on("creds.update", saveCreds);
 
+    // ✅ FIXED PAIRING CODE
     if (method === "code" && phone) {
       let cleaned = phone.replace(/\D/g, "");
       if (cleaned.startsWith("0")) cleaned = "234" + cleaned.slice(1);
+
       try {
         if (!state.creds.registered) {
           log("Requesting pairing code...", "info");
-          await new Promise(r => setTimeout(r, 5000));
+          await new Promise((r) => setTimeout(r, 5000));
           const code = await sock.requestPairingCode(cleaned);
           const formatted = code?.match(/.{1,4}/g)?.join("-") || code;
           send({ type: "pairing_code", code: formatted });
-          log(\`Code: \${formatted}\`, "success");
+          log(`Code: ${formatted}`, "success");
         }
       } catch (err) {
         send({ type: "error", text: err.message });
@@ -159,6 +108,7 @@ wss.on("connection", (ws) => {
         await saveCreds();
 
         try {
+          // ✅ Use crypto.randomUUID for sessionId
           const sessionId = "prezzy_" + crypto.randomUUID();
           send({ type: "authenticated", sessionId });
 
@@ -167,28 +117,25 @@ wss.on("connection", (ws) => {
             const jid = myId.split(":")[0] + "@s.whatsapp.net";
             const song = randomSong();
 
-            try {
-              await sock.sendMessage(jid, {
-                audio: { url: song.url.startsWith("/") ? "http://localhost:" + ${PORT} + song.url : song.url },
-                mimetype: "audio/mpeg",
-                ptt: false,
-              });
+            // ✅ Send song to WhatsApp
+            await sock.sendMessage(jid, {
+              audio: { url: song.url.startsWith("/") ? "http://localhost:" + PORT + song.url : song.url },
+              mimetype: "audio/mpeg",
+              ptt: false,
+            });
 
-              await sock.sendMessage(jid, {
-                text: \`╔══════════════╗
+            await sock.sendMessage(jid, {
+              text: `╔══════════════╗
 ║ 🥀PREZZY MDX   
 ║ 🥀 SESSION READY ║
 ╚══════════════╝
 
-🎵 Now Playing: \${song.title}
-👤 \${song.artist}
+🎵 Now Playing: ${song.title}
+👤 ${song.artist}
 
 🔑 SESSION ID:
-\${sessionId.substring(0, 60)}...\`,
-              });
-            } catch (audioErr) {
-              log(\`Error sending song: \${audioErr.message}\`, "error");
-            }
+${sessionId.substring(0, 60)}...`,
+            });
           }
 
           sock.end();
@@ -208,7 +155,11 @@ wss.on("connection", (ws) => {
   ws.on("message", async (raw) => {
     try {
       const msg = JSON.parse(raw.toString());
-      if (msg.type === "start") await startBaileys(msg.method, msg.phone || "");
+
+      if (msg.type === "start") {
+        await startBaileys(msg.method, msg.phone || "");
+      }
+
       if (msg.type === "new_qr") {
         if (sock) sock.end();
         await startBaileys("qr");
